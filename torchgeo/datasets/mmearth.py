@@ -392,9 +392,13 @@ class MMEarth(NonGeoDataset):
         specific_modality_bands = {}
         for modality, bands in self.modality_bands.items():
             if modality == 'era5':
-                # replace date with the 'prev' and 'curr' strings for generality
-                bands = [band.replace(prev_month_str, 'prev') for band in bands]
-                bands = [band.replace(curr_month_str, 'curr') for band in bands]
+                # Replace both prev and curr month with the generic strings in a single pass
+                new_bands = []
+                for band in bands:
+                    band = band.replace(prev_month_str, 'prev')
+                    band = band.replace(curr_month_str, 'curr')
+                    new_bands.append(band)
+                bands = new_bands
             specific_modality_bands[modality] = bands
 
         return specific_modality_bands
@@ -408,15 +412,21 @@ class MMEarth(NonGeoDataset):
         Returns:
             Dictionary with intersected keys and lists.
         """
+        # Optimization: cache lookups and convert target to set for O(1) lookup
+        all_modalities = self.all_modalities
+        all_modality_bands = self.all_modality_bands
+
         sample_specific_band_names = self.get_sample_specific_band_names(tile_info)
-        # used the chosen modality bands to get the intersection with available bands
         intersection_dict = {}
-        for modality in self.all_modalities:
+
+        for modality in all_modalities:
             if modality in sample_specific_band_names:
+                specific_band_set = set(sample_specific_band_names[modality])
+                # Use set for fast lookup
                 intersected_list = [
                     band
-                    for band in self.all_modality_bands[modality]
-                    if band in sample_specific_band_names[modality]
+                    for band in all_modality_bands[modality]
+                    if band in specific_band_set
                 ]
                 if intersected_list:
                     intersection_dict[modality] = intersected_list
