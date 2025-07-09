@@ -546,6 +546,4 @@ def dofa_huge_patch14_224(*args: Any, **kwargs: Any) -> DOFA:
     Returns:
         A DOFA huge 14 model.
     """
-    kwargs |= {'patch_size': 14, 'embed_dim': 1280, 'depth': 32, 'num_heads': 16}
-    model = DOFA(*args, **kwargs)
-    return model
+    return DOFA(*args, patch_size=14, embed_dim=1280, depth=32, num_heads=16, **kwargs)
