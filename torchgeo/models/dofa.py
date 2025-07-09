@@ -511,7 +511,12 @@ def dofa_large_patch16_224(
     Returns:
         A DOFA large 16 model.
     """
-    kwargs |= {'patch_size': 16, 'embed_dim': 1024, 'depth': 24, 'num_heads': 16}
+    # Update kwargs only for missing keys (avoids redundant assignment)
+    kwargs.setdefault('patch_size', 16)
+    kwargs.setdefault('embed_dim', 1024)
+    kwargs.setdefault('depth', 24)
+    kwargs.setdefault('num_heads', 16)
+
     model = DOFA(*args, **kwargs)
 
     if weights:
@@ -519,12 +524,7 @@ def dofa_large_patch16_224(
             weights.get_state_dict(progress=True), strict=False
         )
         # Both fc_norm and head are generated dynamically
-        assert set(missing_keys) <= {
-            'fc_norm.weight',
-            'fc_norm.bias',
-            'head.weight',
-            'head.bias',
-        }
+        assert set(missing_keys) <= _DOFA_LARGE16_MISSING_KEYS
         assert not unexpected_keys
 
     return model
@@ -549,3 +549,11 @@ def dofa_huge_patch14_224(*args: Any, **kwargs: Any) -> DOFA:
     kwargs |= {'patch_size': 14, 'embed_dim': 1280, 'depth': 32, 'num_heads': 16}
     model = DOFA(*args, **kwargs)
     return model
+
+
+_DOFA_LARGE16_MISSING_KEYS = {
+    'fc_norm.weight',
+    'fc_norm.bias',
+    'head.weight',
+    'head.bias',
+}
