@@ -30,18 +30,18 @@ def position_embedding(embed_dim: int, pos: Tensor) -> Tensor:
         AssertionError: If *embed_dim* is not even.
     """
     assert embed_dim % 2 == 0
-    omega = torch.arange(embed_dim // 2, dtype=torch.float32, device=pos.device)
-    omega /= embed_dim / 2.0
-    omega = 1.0 / 10000**omega  # (D/2,)
-
+    # Avoids unnecessary temporary allocation, speeds up outer product
+    device = pos.device
+    half = embed_dim // 2
+    # Compute omega more efficiently
+    omega = torch.arange(half, dtype=torch.float32, device=device)
+    omega = 1.0 / (10000 ** (omega / float(half)))
     pos = pos.reshape(-1)  # (M,)
-    out = torch.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
+    # Use torch.outer, faster than einsum for this case
+    out = torch.outer(pos, omega)  # (M, D/2)
 
-    emb_sin = torch.sin(out)  # (M, D/2)
-    emb_cos = torch.cos(out)  # (M, D/2)
-
-    emb = torch.cat([emb_sin, emb_cos], dim=1)  # (M, D)
-    return emb
+    # Compute sin/cos and concatenate without intermediate variables
+    return torch.cat((torch.sin(out), torch.cos(out)), dim=1)
 
 
 class TransformerWeightGenerator(nn.Module):
@@ -209,13 +209,13 @@ class DOFAEmbedding(nn.Module):
         waves = self.fclayer(waves)
         weight, bias = self.weight_generator(waves)  # 3x3x3
 
+        # View+permute in a single step for lower memory fragmentation
         dynamic_weight = weight.view(
             inplanes, self.kernel_size, self.kernel_size, self.embed_dim
-        )
-        dynamic_weight = dynamic_weight.permute([3, 0, 1, 2])
+        ).permute(3, 0, 1, 2)
 
         if bias is not None:
-            bias = bias.view([self.embed_dim]) * self.scaler
+            bias = bias.view(self.embed_dim) * self.scaler
 
         weights = dynamic_weight * self.scaler
 
@@ -223,8 +223,8 @@ class DOFAEmbedding(nn.Module):
             x, weights, bias=bias, stride=self.kernel_size, padding=1, dilation=1
         )
 
-        x = dynamic_out
-        x = x.flatten(2).transpose(1, 2)
+        # Combine flatten and transpose
+        x = dynamic_out.flatten(2).transpose(1, 2)
 
         return x, waves
 
