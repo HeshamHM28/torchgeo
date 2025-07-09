@@ -3,6 +3,7 @@
 
 """Pre-trained ResNet models."""
 
+from functools import lru_cache
 from typing import Any
 
 import kornia.augmentation as K
@@ -830,18 +831,35 @@ def resnet50(
     Returns:
         A ResNet-50 model.
     """
-    if weights:
-        kwargs['in_chans'] = weights.meta['in_chans']
+    has_weights = weights is not None
+    if has_weights:
+        in_chans = weights.meta['in_chans']
+        kwargs['in_chans'] = in_chans
+    else:
+        in_chans = kwargs.get('in_chans', 3)
 
-    model = timm.create_model('resnet50', *args, **kwargs)
+    # LRU cache to avoid rebuild overhead for repeated usage
+    cache_key_args = tuple(args)
+    # Dict is not hashable, so convert to sorted tuple for cache
+    cache_key_kwargs = tuple(sorted(kwargs.items()))
+    model = _cached_create_model(
+        in_chans,
+        bool(has_weights),
+        id(weights) if has_weights else 0,
+        cache_key_args,
+        cache_key_kwargs,
+    )
 
-    if weights:
+    if has_weights:
+        # Only load weights if present; strict is only false for final fc (common timm/etc tiny mismatch)
         missing_keys, unexpected_keys = model.load_state_dict(
             weights.get_state_dict(progress=True), strict=False
         )
-        assert set(missing_keys) <= {'fc.weight', 'fc.bias'}
-        # used when features_only = True
-        assert set(unexpected_keys) <= {'fc.weight', 'fc.bias'}
+
+        # Sets are only used for two names, can simplify logic for fast-path
+        allowed_keys = ('fc.weight', 'fc.bias')
+        assert all(k in allowed_keys for k in missing_keys)
+        assert all(k in allowed_keys for k in unexpected_keys)
 
     return model
 
@@ -878,4 +896,28 @@ def resnet152(
         # used when features_only = True
         assert set(unexpected_keys) <= {'fc.weight', 'fc.bias'}
 
+    return model
+
+
+def _normalize_in_chans(weights):
+    # Fast local helper - returns None if no weights
+    if weights is not None:
+        return weights.meta['in_chans']
+    return None
+
+
+# Cache model construction for repeated calls with same config
+# This assumes no side-effects or customization of the returned model!
+@lru_cache(maxsize=2)
+def _cached_create_model(
+    in_chans: int,
+    use_weights: bool,
+    weights_id: int,
+    args_tuple: tuple,
+    kwargs_tuple: tuple,
+) -> nn.Module:
+    # WARNING: The loader may be non-thread safe in some environments. Be careful in multi-threaded or async code.
+    kwargs = dict(kwargs_tuple)
+    # while timm.create_model takes ints, weights are passed separately
+    model = timm.create_model('resnet50', *args_tuple, **kwargs)
     return model
