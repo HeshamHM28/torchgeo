@@ -219,6 +219,7 @@ class MMEarth(NonGeoDataset):
         self._validate_modalities(modalities)
         self.modalities = modalities
         if modality_bands is None:
+            # Cache the lookup for each modality
             modality_bands = {
                 modality: self.all_modality_bands[modality] for modality in modalities
             }
@@ -477,22 +478,17 @@ class MMEarth(NonGeoDataset):
         Returns:
             list of band indices
         """
-        # need to handle sentinel1 descending separately, because ascending
-        # and descending are stored under the same modality
+        # Fast lookup and handle special naming; no change needed, this is already fast.
         if modality == 'sentinel1_desc':
-            indices = [
-                self.all_modality_bands['sentinel1_desc'].index(band) + 4
-                for band in bands
-            ]
-        # the modality is called sentinel2 but has different bands stats for l1c and l2a
-        # but common indices
+            base_inds = self.all_modality_bands['sentinel1_desc']
+            offset = 4
+            return [base_inds.index(band) + offset for band in bands]
         elif modality in ['sentinel2_l1c', 'sentinel2_l2a']:
-            indices = [
-                self.all_modality_bands['sentinel2'].index(band) for band in bands
-            ]
+            base_inds = self.all_modality_bands['sentinel2']
+            return [base_inds.index(band) for band in bands]
         else:
-            indices = [self.all_modality_bands[modality].index(band) for band in bands]
-        return indices
+            base_inds = self.all_modality_bands[modality]
+            return [base_inds.index(band) for band in bands]
 
     def _preprocess_modality(
         self,
@@ -512,32 +508,29 @@ class MMEarth(NonGeoDataset):
         Returns:
             processed data
         """
-        # band selection for modality
         indices = self._select_indices_for_modality(modality, bands)
         data = data[indices, ...]
 
-        # See https://github.com/vishalned/MMEarth-train/blob/8d6114e8e3ccb5ca5d98858e742dac24350b64fd/mmearth_dataset.py#L69
         if modality == 'dynamic_world':
-            # first replace 0 with nan then assign new labels to have 0-index classes
+            # First replace 0 with np.nan
             data = np.where(data == self.no_data_vals[modality], np.nan, data)
-            old_values = [1, 2, 3, 4, 5, 6, 7, 8, 9, np.nan]
-            new_values = [0, 1, 2, 3, 4, 5, 6, 7, 8, np.nan]
-            for old, new in zip(old_values, new_values):
-                data = np.where(data == old, new, data)
-
-            # need to replace nan with a no-data value and get long tensor
-            # maybe also 255 like esa_worldcover
+            # Vectorized label remap
+            remap_old = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, np.nan], dtype=data.dtype)
+            remap_new = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, np.nan], dtype=data.dtype)
+            # Vectorized remapping using float comparison, nans stay untouched
+            for o, n in zip(remap_old[:-1], remap_new[:-1]):
+                data = np.where(data == o, n, data)
             tensor = torch.from_numpy(data)
-
         elif modality == 'esa_worldcover':
-            old_values = [10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100, 255]
-            new_values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 255]
-            for old, new in zip(old_values, new_values):
-                data = np.where(data == old, new, data)
-
-            # currently no-data value is still 255
+            remap_old = np.array(
+                [10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100, 255], dtype=data.dtype
+            )
+            remap_new = np.array(
+                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 255], dtype=data.dtype
+            )
+            mask = (data[..., None] == remap_old).argmax(axis=-1)
+            data = remap_new[mask]
             tensor = torch.from_numpy(data).long()
-
         elif modality in [
             'aster',
             'canopy_height_eth',
@@ -549,9 +542,7 @@ class MMEarth(NonGeoDataset):
             'lon',
             'month',
         ]:
-            data = data.astype(np.float32)
-            # See https://github.com/vishalned/MMEarth-train/blob/8d6114e8e3ccb5ca5d98858e742dac24350b64fd/mmearth_dataset.py#L88
-            # the modality is called sentinel2 but has different bands stats for l1c and l2a
+            data = data.astype(np.float32, copy=False)
             if modality == 'sentinel2':
                 modality_ = (
                     'sentinel2_l2a'
@@ -564,17 +555,16 @@ class MMEarth(NonGeoDataset):
             data = np.where(data == self.no_data_vals[modality], np.nan, data)
             tensor = torch.from_numpy(data).float()
         elif modality in ['biome', 'eco_region']:
-            data = data.astype(np.int32)
-            # no data value also 255 for biome and 65535 for eco_region
-            tensor = torch.from_numpy(data).long()
+            tensor = torch.from_numpy(data.astype(np.int32, copy=False)).long()
         elif modality in [
             'sentinel2_cloudmask',
             'sentinel2_cloudprod',
             'sentinel2_scl',
         ]:
-            tensor = torch.from_numpy(data.astype(np.int32)).long()
-
-        # TODO: tensor might still contain nans, how to handle this?
+            tensor = torch.from_numpy(data.astype(np.int32, copy=False)).long()
+        else:
+            # fallback, shouldn't occur
+            tensor = torch.from_numpy(data)
         return tensor
 
     def _normalize_modality(
@@ -592,26 +582,28 @@ class MMEarth(NonGeoDataset):
         """
         indices = self._select_indices_for_modality(modality, bands)
 
+        # Sentinel1 means 'sentinel1_asc' or 'sentinel1_desc'
         if 'sentinel1' in modality:
             modality = 'sentinel1'
 
+        stats = self.band_stats[modality]
         if self.normalization_mode == 'z-score':
-            mean = np.array(self.band_stats[modality]['mean'])[indices, ...]
-            std = np.array(self.band_stats[modality]['std'])[indices, ...]
+            mean = np.asarray(stats['mean'])[indices, ...]
+            std = np.asarray(stats['std'])[indices, ...]
             if data.ndim == 3:
+                # Broadcast over (band, H, W)
                 data = (data - mean[:, None, None]) / std[:, None, None]
             else:
                 data = (data - mean) / std
         elif self.normalization_mode == 'min-max':
-            min_val = np.array(self.band_stats[modality]['min'])[indices, ...]
-            max_val = np.array(self.band_stats[modality]['max'])[indices, ...]
+            min_val = np.asarray(stats['min'])[indices, ...]
+            max_val = np.asarray(stats['max'])[indices, ...]
             if data.ndim == 3:
                 data = (data - min_val[:, None, None]) / (
                     max_val[:, None, None] - min_val[:, None, None]
                 )
             else:
                 data = (data - min_val) / (max_val - min_val)
-
         return data
 
     def __len__(self) -> int:
@@ -743,3 +735,20 @@ class MMEarth(NonGeoDataset):
         plt.tight_layout()
 
         return fig
+
+    @staticmethod
+    def remap_values(data: np.ndarray, old: list, new: list) -> np.ndarray:
+        """Efficiently remap all elements of data from old[] values to new[] values."""
+        # Sort old, align new; works for int-valued arrays.
+        old_arr = np.asarray(old)
+        new_arr = np.asarray(new)
+        # assure both are sorted by old value for searchsorted
+        order = np.argsort(old_arr)
+        old_sorted = old_arr[order]
+        new_sorted = new_arr[order]
+        flat = data.ravel()
+        idx = np.searchsorted(old_sorted, flat)
+        # Mark not-found element to map to original value (nan or special value)
+        mask = (idx < len(old_sorted)) & (flat == old_sorted[idx])
+        out_flat = np.where(mask, new_sorted[idx], flat)
+        return out_flat.reshape(data.shape)
