@@ -1,6 +1,7 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
+import itertools
 import math
 import os
 import pickle
@@ -30,6 +31,7 @@ from torchgeo.datasets import (
     Sentinel2,
     UnionDataset,
     VectorDataset,
+    XarrayDataset,
 )
 from torchgeo.datasets.utils import GeoSlice
 
@@ -451,7 +453,7 @@ class TestRasterDataset:
 
     def test_invalid_query(self, sentinel: Sentinel2) -> None:
         with pytest.raises(
-            IndexError, match='query: .* not found in index with bounds: .*'
+            IndexError, match=r'query: .* not found in index with bounds: .*'
         ):
             sentinel[0:0, 0:0, pd.Timestamp.min : pd.Timestamp.min]
 
@@ -484,6 +486,50 @@ class TestRasterDataset:
         ds.res = 20.0
 
 
+class TestXarrayDataset:
+    pytest.importorskip('rioxarray', minversion='0.14.1')
+    pytest.importorskip('xarray', minversion='0.17')
+
+    @pytest.fixture(
+        scope='class',
+        params=itertools.product(['hdf5', 'netcdf'], [None, CRS.from_epsg(4979)]),
+    )
+    def dataset(self, request: SubRequest) -> XarrayDataset:
+        root = os.path.join('tests', 'data', request.param[0])
+        transforms = nn.Identity()
+        match request.param[0]:
+            case 'hdf5':
+                ds = XarrayDataset(root, crs=request.param[1], transforms=transforms)
+            case 'netcdf':
+                with pytest.warns(UserWarning, match='Unable to decode coordinates'):
+                    ds = XarrayDataset(root, crs=request.param[1], res=3)
+
+        return ds
+
+    def test_getitem(self, dataset: XarrayDataset) -> None:
+        x = dataset[dataset.bounds]
+        assert isinstance(x, dict)
+        assert isinstance(x['image'], torch.Tensor)
+
+    def test_and(self, dataset: XarrayDataset) -> None:
+        ds = dataset & dataset
+        assert isinstance(ds, IntersectionDataset)
+
+    def test_or(self, dataset: XarrayDataset) -> None:
+        ds = dataset | dataset
+        assert isinstance(ds, UnionDataset)
+
+    def test_invalid_query(self, dataset: XarrayDataset) -> None:
+        with pytest.raises(
+            IndexError, match=r'query: .* not found in index with bounds:'
+        ):
+            dataset[0:0, 0:0, pd.Timestamp.min : pd.Timestamp.min]
+
+    def test_no_data(self, tmp_path: Path) -> None:
+        with pytest.raises(DatasetNotFoundError, match='Dataset not found'):
+            XarrayDataset(tmp_path)
+
+
 class TestVectorDataset:
     @pytest.fixture(scope='class')
     def dataset(self) -> CustomVectorDataset:
@@ -499,7 +545,12 @@ class TestVectorDataset:
             root, res=(0.1, 0.1), transforms=transforms, label_name='label_id'
         )
 
+    def test_invalid_task(self, dataset: CustomVectorDataset) -> None:
+        with pytest.raises(ValueError, match='Invalid task:'):
+            CustomVectorDataset(dataset.paths, task='invalid-task')  # type: ignore[arg-type]
+
     def test_getitem(self, dataset: CustomVectorDataset) -> None:
+        dataset.task = 'semantic_segmentation'
         x = dataset[dataset.bounds]
         assert isinstance(x, dict)
         assert isinstance(x['crs'], CRS)
@@ -509,11 +560,34 @@ class TestVectorDataset:
             torch.tensor([0, 1], dtype=torch.uint8),
         )
 
+        dataset.task = 'object_detection'
+        x = dataset[dataset.bounds]
+        assert isinstance(x, dict)
+        assert isinstance(x['crs'], CRS)
+        assert isinstance(x['bbox_xyxy'], torch.Tensor)
+        assert isinstance(x['label'], torch.Tensor)
+        assert x['bbox_xyxy'].shape[-1] == 4
+
+        dataset.task = 'instance_segmentation'
+        x = dataset[dataset.bounds]
+        assert isinstance(x, dict)
+        assert isinstance(x['crs'], CRS)
+        assert isinstance(x['bbox_xyxy'], torch.Tensor)
+        assert isinstance(x['label'], torch.Tensor)
+        assert isinstance(x['mask'], torch.Tensor)
+        assert torch.equal(
+            x['mask'].unique(),  # type: ignore[no-untyped-call]
+            torch.tensor([0, 1], dtype=torch.uint8),
+        )
+        assert x['bbox_xyxy'].shape[-1] == 4
+        assert len(x['label']) == x['mask'].shape[0]
+
     def test_time_index(self, dataset: CustomVectorDataset) -> None:
         assert dataset.bounds[2].start > pd.Timestamp.min
         assert dataset.bounds[2].stop < pd.Timestamp.max
 
     def test_getitem_multilabel(self, multilabel: CustomVectorDataset) -> None:
+        multilabel.task = 'semantic_segmentation'
         x = multilabel[multilabel.bounds]
         assert isinstance(x, dict)
         assert isinstance(x['crs'], CRS)
@@ -523,13 +597,47 @@ class TestVectorDataset:
             torch.tensor([0, 1, 2, 3], dtype=torch.uint8),
         )
 
+        multilabel.task = 'object_detection'
+        x = multilabel[multilabel.bounds]
+        assert isinstance(x, dict)
+        assert isinstance(x['crs'], CRS)
+        assert isinstance(x['bbox_xyxy'], torch.Tensor)
+        assert isinstance(x['label'], torch.Tensor)
+        assert torch.equal(x['label'], torch.tensor([1, 2, 3], dtype=torch.int32))
+        assert x['bbox_xyxy'].shape[-1] == 4
+
+        multilabel.task = 'instance_segmentation'
+        x = multilabel[multilabel.bounds]
+        assert isinstance(x, dict)
+        assert isinstance(x['crs'], CRS)
+        assert isinstance(x['bbox_xyxy'], torch.Tensor)
+        assert isinstance(x['label'], torch.Tensor)
+        assert torch.equal(x['label'], torch.tensor([1, 2, 3], dtype=torch.int32))
+        assert isinstance(x['mask'], torch.Tensor)
+        assert torch.equal(
+            x['mask'].unique(),  # type: ignore[no-untyped-call]
+            torch.tensor([0, 1], dtype=torch.uint8),
+        )
+        assert x['bbox_xyxy'].shape[-1] == 4
+        assert len(x['label']) == x['mask'].shape[0]
+
     def test_empty_shapes(self, dataset: CustomVectorDataset) -> None:
+        dataset.task = 'semantic_segmentation'
         x = dataset[1.1:1.9, 1.1:1.9, pd.Timestamp.min : pd.Timestamp.max]  # type: ignore[misc]
+        assert torch.equal(x['mask'], torch.zeros(8, 8, dtype=torch.uint8))
+
+        dataset.task = 'object_detection'
+        x = dataset[1.1:1.9, 1.1:1.9, pd.Timestamp.min : pd.Timestamp.max]  # type: ignore[misc]
+        assert torch.equal(x['bbox_xyxy'], torch.empty(0, 4, dtype=torch.float32))
+
+        dataset.task = 'instance_segmentation'
+        x = dataset[1.1:1.9, 1.1:1.9, pd.Timestamp.min : pd.Timestamp.max]  # type: ignore[misc]
+        assert torch.equal(x['bbox_xyxy'], torch.empty(0, 4, dtype=torch.float32))
         assert torch.equal(x['mask'], torch.zeros(8, 8, dtype=torch.uint8))
 
     def test_invalid_query(self, dataset: CustomVectorDataset) -> None:
         with pytest.raises(
-            IndexError, match='query: .* not found in index with bounds:'
+            IndexError, match=r'query: .* not found in index with bounds:'
         ):
             dataset[3:3, 3:3, pd.Timestamp.min : pd.Timestamp.min]
 
@@ -908,7 +1016,7 @@ class TestIntersectionDataset:
 
     def test_invalid_query(self, dataset: IntersectionDataset) -> None:
         with pytest.raises(
-            IndexError, match='query: .* not found in index with bounds:'
+            IndexError, match=r'query: .* not found in index with bounds:'
         ):
             dataset[-1:-1, -1:-1, pd.Timestamp.min : pd.Timestamp.min]
 
@@ -1072,6 +1180,6 @@ class TestUnionDataset:
 
     def test_invalid_query(self, dataset: UnionDataset) -> None:
         with pytest.raises(
-            IndexError, match='query: .* not found in index with bounds:'
+            IndexError, match=r'query: .* not found in index with bounds:'
         ):
             dataset[-1:-1, -1:-1, pd.Timestamp.min : pd.Timestamp.min]

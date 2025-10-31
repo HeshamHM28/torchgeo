@@ -62,6 +62,11 @@ BigEarthNet
 
 .. autoclass:: BigEarthNetDataModule
 
+BRIGHT
+^^^^^^
+
+.. autoclass:: BRIGHTDFC2025DataModule
+
 CaBuAr
 ^^^^^^
 
@@ -169,6 +174,11 @@ OSCD
 ^^^^
 
 .. autoclass:: OSCDDataModule
+
+PASTIS
+^^^^^^
+
+.. autoclass:: PASTISDataModule
 
 PatternNet
 ^^^^^^^^^^

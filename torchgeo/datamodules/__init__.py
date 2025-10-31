@@ -1,10 +1,11 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """TorchGeo datamodules."""
 
 from .agrifieldnet import AgriFieldNetDataModule
 from .bigearthnet import BigEarthNetDataModule
+from .bright import BRIGHTDFC2025DataModule
 from .cabuar import CaBuArDataModule
 from .caffe import CaFFeDataModule
 from .chabud import ChaBuDDataModule
@@ -33,6 +34,7 @@ from .mmflood import MMFloodDataModule
 from .naip import NAIPChesapeakeDataModule
 from .nasa_marine_debris import NASAMarineDebrisDataModule
 from .oscd import OSCDDataModule
+from .pastis import PASTISDataModule
 from .patternnet import PatternNetDataModule
 from .potsdam import Potsdam2DDataModule
 from .quakeset import QuakeSetDataModule
@@ -63,6 +65,7 @@ from .xview import XView2DataModule
 
 __all__ = (
     'AgriFieldNetDataModule',
+    'BRIGHTDFC2025DataModule',
     'BaseDataModule',
     'BigEarthNetDataModule',
     'COWCCountingDataModule',
@@ -98,6 +101,7 @@ __all__ = (
     'NASAMarineDebrisDataModule',
     'NonGeoDataModule',
     'OSCDDataModule',
+    'PASTISDataModule',
     'PatternNetDataModule',
     'Potsdam2DDataModule',
     'QuakeSetDataModule',
